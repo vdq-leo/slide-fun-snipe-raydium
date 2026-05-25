@@ -41,11 +41,13 @@ pub async fn send_via_jito(encoded_txs: &[String]) -> Result<String, Box<dyn std
         let txs_clone = encoded_txs.to_vec();
 
         inflight.push(async move {
+            // IMPORTANT: Jito requires base64 encoding (base58 is slow/deprecated).
+            // The second element in params is the encoding option object.
             let payload = json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "sendBundle",
-                "params": [txs_clone]
+                "params": [txs_clone, {"encoding": "base64"}]
             });
 
             let response = JITO_HTTP_CLIENT
@@ -104,11 +106,13 @@ pub async fn send_bundle_to_url(
     url: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let txs_clone = encoded_txs.to_vec();
+    // IMPORTANT: Jito requires base64 encoding (base58 is slow/deprecated).
+    // The second element in params is the encoding option object.
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendBundle",
-        "params": [txs_clone]
+        "params": [txs_clone, {"encoding": "base64"}]
     });
 
     let response = JITO_HTTP_CLIENT
@@ -154,8 +158,8 @@ pub fn build_swap_instruction(
         AccountMeta::new_readonly(raydium_authority, false),
         AccountMeta::new(pool_info.open_orders, false),
         AccountMeta::new(pool_info.target_orders, false),
-        AccountMeta::new(pool_info.base_vault, false),
-        AccountMeta::new(pool_info.quote_vault, false),
+        AccountMeta::new(pool_info.amm_coin_vault, false),
+        AccountMeta::new(pool_info.amm_pc_vault, false),
         AccountMeta::new_readonly(pool_info.serum_program_id, false),
         AccountMeta::new(pool_info.market_id, false),
         AccountMeta::new(pool_info.market_bids, false),

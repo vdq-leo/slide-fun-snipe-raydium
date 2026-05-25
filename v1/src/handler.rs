@@ -6,6 +6,7 @@ use crate::{
     blockhash::get_blockhash, config::Config, constants::WSOL_MINT, log_info,
     trades::{Trade, TradesStore}, transaction::build_swap_instruction, types::PoolInfo,
 };
+use base64::Engine;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 #[allow(deprecated)]
 use solana_sdk::{
@@ -155,7 +156,8 @@ pub async fn handle_buy(
         };
 
     let serialized = bincode::serialize(&transaction).unwrap();
-    let encoded = bs58::encode(&serialized).into_string();
+    // base64 encoding is Jito's recommended format; base58 is deprecated
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&serialized);
 
     // Log the transaction size to monitor the 1232-byte limit
     log_info!(

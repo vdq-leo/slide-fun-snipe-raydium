@@ -29,8 +29,8 @@ use crate::config::Config;
 use crate::trades::{Trade, TradesStore};
 // use crate::transaction::send_bundle_to_url;
 use crate::types::PoolInfo;
+use base64::Engine;
 use bincode;
-use bs58;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -224,10 +224,10 @@ pub fn build_slidefun_buy_tx_for_wallet(
 // Bundle packing + sending
 // ============================================
 
-/// Encode a VersionedTransaction to base58 (Jito bundle format).
+/// Encode a VersionedTransaction to base64 (Jito's recommended format; base58 is deprecated).
 fn encode_tx(tx: &VersionedTransaction) -> Option<String> {
     let bytes = bincode::serialize(tx).ok()?;
-    Some(bs58::encode(&bytes).into_string())
+    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 fn sig_short(sig: &Signature) -> String {

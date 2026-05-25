@@ -42,7 +42,7 @@ pub const SLIDEFUN_BONDING_CURVE_SEED: &[u8] = b"bonding_curve";
 
 // Raydium AMM V4
 pub const RAYDIUM_AMM_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
-pub const RAYDIUM_AMM_PROGRAM_DEVNET: &str = "DRaya7Kj3aMWQSy19kSjvmuwq9docCHofyP9kanQGaav";
+pub const RAYDIUM_AMM_PROGRAM_DEVNET: &str = "DRaycpLY18LhpbydsBWbVJtxpNv9oXPgjRSfpF2bWpYb";
 pub const RAYDIUM_AUTHORITY: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
 
 lazy_static! {

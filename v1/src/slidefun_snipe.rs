@@ -34,6 +34,7 @@ use crate::config::Config;
 use crate::transaction::send_via_jito;
 use crate::trades::{Trade, TradesStore};
 use crate::{constants, log_info};
+use base64::Engine;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig};
 use solana_sdk::{
@@ -394,7 +395,8 @@ pub async fn handle_slidefun_buy(
         return;
     }
 
-    let encoded = bs58::encode(&serialized).into_string();
+    // base64 encoding is Jito's recommended format; base58 is deprecated
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&serialized);
 
     log_info!(
         "[SFSNIPE] 🚀 Firing Slide.fun buy ({} SOL)...",

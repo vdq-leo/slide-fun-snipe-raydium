@@ -278,6 +278,8 @@ async fn build_pool_info_from_accounts(
         lp_mint,
         base_vault: final_base_vault,
         quote_vault: final_quote_vault,
+        amm_coin_vault: base_vault,
+        amm_pc_vault: quote_vault,
         open_orders,
         market_id,
         target_orders,
@@ -578,4 +580,141 @@ pub async fn find_pool_by_mint(rpc_client: &RpcClient, mint: &Pubkey, amm_progra
 
     log_info!("[POOL] No Raydium AMM V4 pool found for mint {}", mint);
     None
+}
+
+/// Parse Raydium AMM V4 pool info **directly from the AMM account data** (752 bytes).
+///
+/// This is the preferred method when you already know the AMM pool address.
+/// It is:
+///   - Much faster than `get_pool_info` (1 RPC call vs scanning 30+ transactions)
+///   - Works for any pool regardless of how old the creation TX is
+///
+/// Raydium AMM V4 state account layout (752 bytes):
+///   Offset  8: nonce (u64)                ← bump seed for AMM authority
+///   Offset 336: base_vault (Pubkey)       ← pool_coin_token_account
+///   Offset 368: quote_vault (Pubkey)      ← pool_pc_token_account
+///   Offset 400: base_mint (Pubkey)        ← coin_mint_address
+///   Offset 432: quote_mint (Pubkey)       ← pc_mint_address (WSOL)
+///   Offset 464: lp_mint (Pubkey)
+///   Offset 496: open_orders (Pubkey)      ← amm_open_orders
+///   Offset 528: market_id (Pubkey)        ← serum_market
+///   Offset 560: serum_program (Pubkey)    ← serum_program_id
+///   Offset 592: target_orders (Pubkey)    ← amm_target_orders
+pub async fn get_pool_info_from_amm_account(
+    rpc_client: &RpcClient,
+    amm_id: &Pubkey,
+    amm_program: Pubkey,
+) -> Option<PoolInfo> {
+    let account = match rpc_client.get_account(amm_id).await {
+        Ok(acc) => acc,
+        Err(e) => {
+            log_info!("[POOL] Failed to fetch AMM account {}: {}", amm_id, e);
+            return None;
+        }
+    };
+    let data = &account.data;
+
+    if data.len() < 752 {
+        log_info!(
+            "[POOL] AMM account data too small: {} bytes (need 752). Not a Raydium AMM V4 account.",
+            data.len()
+        );
+        return None;
+    }
+
+    // Nonce at offset 8 — used as the bump seed to derive the AMM authority
+    let nonce = data[8]; // take only the lowest byte
+
+    // Parse all key Pubkeys at their fixed offsets
+    let base_vault    = Pubkey::try_from(&data[336..368]).ok()?; // pool_coin_token_account
+    let quote_vault   = Pubkey::try_from(&data[368..400]).ok()?; // pool_pc_token_account
+    let base_mint     = Pubkey::try_from(&data[400..432]).ok()?; // coin_mint
+    let quote_mint    = Pubkey::try_from(&data[432..464]).ok()?; // pc_mint (usually WSOL)
+    let lp_mint       = Pubkey::try_from(&data[464..496]).ok()?;
+    let open_orders   = Pubkey::try_from(&data[496..528]).ok()?;
+    let market_id     = Pubkey::try_from(&data[528..560]).ok()?;
+    let serum_program = Pubkey::try_from(&data[560..592]).ok()?;
+    let target_orders = Pubkey::try_from(&data[592..624]).ok()?;
+
+    log_info!("[POOL] Parsed AMM account: {}", amm_id);
+    log_info!("[POOL]   base_mint   : {}", base_mint);
+    log_info!("[POOL]   quote_mint  : {}", quote_mint);
+    log_info!("[POOL]   base_vault  : {}", base_vault);
+    log_info!("[POOL]   quote_vault : {}", quote_vault);
+    log_info!("[POOL]   market_id   : {}", market_id);
+
+    // Derive the AMM authority from the nonce
+    let authority_seeds: &[&[u8]] = &[b"amm authority", &[nonce]];
+    let amm_authority = match Pubkey::create_program_address(authority_seeds, &amm_program) {
+        Ok(pk) => pk,
+        Err(e) => {
+            log_info!("[POOL] Failed to derive AMM authority (nonce={}): {}", nonce, e);
+            return None;
+        }
+    };
+    log_info!("[POOL]   amm_authority: {}", amm_authority);
+
+    let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+    if base_mint != wsol && quote_mint != wsol {
+        log_info!("[POOL] Not a SOL/WSOL pair — skipping");
+        return None;
+    }
+
+    let token_mint = if base_mint == wsol { quote_mint } else { base_mint };
+    let base_token_program = mint_token_program_for_mint(rpc_client, &token_mint).await;
+    log_info!("[POOL]   token_mint  : {} (program: {})", token_mint, base_token_program);
+
+    // Vaults are stored as coin=base, pc=quote in the AMM state.
+    // Our PoolInfo uses base=token, quote=WSOL convention.
+    let (final_base_vault, final_quote_vault) = if base_mint == wsol {
+        (quote_vault, base_vault)
+    } else {
+        (base_vault, quote_vault)
+    };
+
+    // Fetch serum market data for bids/asks/vaults
+    let (market_bids, market_asks, market_event_queue, market_coin_vault, market_pc_vault, market_vault_signer) =
+        if let Some(market_data) = parse_serum_market(rpc_client, &market_id).await {
+            let vault_signer = derive_vault_signer(&market_id, market_data.vault_signer_nonce, &serum_program);
+            (
+                market_data.bids,
+                market_data.asks,
+                market_data.event_queue,
+                market_data.coin_vault,
+                market_data.pc_vault,
+                vault_signer,
+            )
+        } else {
+            log_info!("[POOL] Cannot parse Serum market {} — swap accounts unavailable", market_id);
+            return None;
+        };
+
+    log_info!("[POOL] ✅ PoolInfo reconstructed from AMM account data!");
+
+    Some(PoolInfo {
+        amm_program_id: amm_program,
+        amm_id: *amm_id,
+        amm_authority,
+        base_mint: token_mint,
+        base_token_program,
+        quote_mint: wsol,
+        lp_mint,
+        base_vault: final_base_vault,
+        quote_vault: final_quote_vault,
+        amm_coin_vault: base_vault,
+        amm_pc_vault: quote_vault,
+        open_orders,
+        market_id,
+        target_orders,
+        serum_program_id: serum_program,
+        market_bids,
+        market_asks,
+        market_event_queue,
+        market_coin_vault,
+        market_pc_vault,
+        market_vault_signer,
+        pool_sol_amount: 0,
+        open_time: 0,
+        creator: Pubkey::default(),
+    })
 }

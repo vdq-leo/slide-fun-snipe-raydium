@@ -13,6 +13,8 @@ pub struct PoolInfo {
     pub lp_mint: Pubkey,
     pub base_vault: Pubkey,
     pub quote_vault: Pubkey,
+    pub amm_coin_vault: Pubkey,
+    pub amm_pc_vault: Pubkey,
     pub open_orders: Pubkey,
     pub market_id: Pubkey,
     pub target_orders: Pubkey,
