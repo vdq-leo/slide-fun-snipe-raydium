@@ -15,7 +15,7 @@
 // Look for "initialize2" instructions.
 
 use dotenvy;
-use slidefun_raydium_snipe::{bundle_buy, config::Config, constants, pool::get_pool_info};
+use slidefun_raydium_snipe::{bundle_buy, config::Config, constants, pool::get_pool_info_from_amm_account};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::{
@@ -38,18 +38,29 @@ async fn main() {
     dotenvy::dotenv().ok();
 
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
+    if args.len() < 1 {
         eprintln!("\n  Usage:");
-        eprintln!("    cargo run --bin test_raydium_bundle -- <POOL_INIT_TX_SIGNATURE>");
-        eprintln!("    cargo run --bin test_raydium_bundle -- <POOL_INIT_TX_SIGNATURE> live\n");
-        eprintln!("  Find a pool TX on: https://solscan.io/txs?filter=Successful");
-        eprintln!("    &programId=675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8\n");
+        eprintln!("    cargo run --bin test_raydium_bundle");
+        eprintln!("    cargo run --bin test_raydium_bundle -- <POOL_AMM_ID>");
+        eprintln!("    cargo run --bin test_raydium_bundle -- <POOL_AMM_ID> live\n");
         std::process::exit(1);
     }
 
-    let signature = &args[1];
     let force_live = args.iter().any(|a| a.eq_ignore_ascii_case("live"));
     let force_dry = args.iter().any(|a| a.eq_ignore_ascii_case("dry"));
+
+    let default_amm = "67ZsVEcuHt9VkWWWGYLhMdx1VMs1H9xHnhnuK8UqdNZF";
+    let amm_id_str = args
+        .iter()
+        .skip(1)
+        .find(|a| *a != "live" && *a != "dry")
+        .map(|s| s.as_str())
+        .unwrap_or(default_amm);
+
+    let amm_pubkey = Pubkey::from_str(amm_id_str).unwrap_or_else(|_| {
+        eprintln!("❌ Invalid AMM ID: {}", amm_id_str);
+        std::process::exit(1);
+    });
 
     // Explicit CLI mode override
     if force_live {
@@ -80,7 +91,7 @@ async fn main() {
             "⚡ LIVE (real SOL!)"
         }
     );
-    println!("  TX Sig     : {}", &signature[..20]);
+    println!("  AMM ID     : {}", amm_id_str);
     println!("  Main wallet: {}", config.keypair.pubkey());
     println!("  SOL/main   : {} SOL", config.sol_amount);
     println!("  SOL/wallet : {} SOL", config.app.slidefun_pump_amount);
@@ -88,8 +99,8 @@ async fn main() {
     println!();
 
     // Step 1: Fetch pool info from TX
-    println!("  [1/4] Fetching pool info from TX...");
-    let pool_info = match get_pool_info(&rpc, signature, config.raydium_program()).await {
+    println!("  [1/4] Fetching pool info from AMM account...");
+    let pool_info = match get_pool_info_from_amm_account(&rpc, &amm_pubkey, config.raydium_program()).await {
         Some(p) => {
             println!("        AMM ID   : {}", p.amm_id);
             println!("        Token    : {}", p.base_mint);
@@ -102,17 +113,20 @@ async fn main() {
             p
         }
         None => {
-            eprintln!("\n  ❌ Could not parse pool info from TX: {}", signature);
-            eprintln!("     Make sure it's a valid Raydium AMM V4 initialize2 TX.\n");
+            eprintln!("\n  ❌ Could not reconstruct PoolInfo from AMM account: {}", amm_id_str);
             std::process::exit(1);
         }
     };
 
     // Step 2: Load sub-wallets
     println!("\n  [2/4] Loading sub-wallets from config...");
-    let wallets: Vec<(Keypair, f64)> = config.enabled_bundle_keypairs();
+    let mut wallets: Vec<(Keypair, f64)> = config.enabled_bundle_keypairs();
     if wallets.is_empty() {
-        println!("        ⚠️  No sub-wallets loaded — only main wallet will buy");
+        println!("        ⚠️  No sub-wallets loaded — using main wallet as a dummy sub-wallet for testing.");
+        wallets.push((
+            Keypair::try_from(&config.keypair.to_bytes()[..]).unwrap(),
+            0.001, // Use 0.001 SOL so the main wallet has enough balance to test
+        ));
     } else {
         println!("        {} sub-wallets loaded", wallets.len());
         for (i, (kp, sol)) in wallets.iter().enumerate() {
